@@ -1,8 +1,9 @@
 # 用 NumPy 学习 LIF 和 BPTT
 
 这个示例在 CPU 上训练 MNIST 手写数字分类器。网络结构为 `784 维像素 → 128 个隐藏 LIF 神经元 → 10 个输出 LIF 神经元`。默认把每张图像输入 16 个时间步。两个 LIF 层的膜电位逐步变化，每层的权重和偏置在所有时间步共享。
-- 参考链接1：https://chatgpt.com/s/cx_6b05242710108191a048636b3acaacd2
-- 参考链接2：https://chatgpt.com/s/cx_6b052450f7c08191a3461b80a0ba23ab
+
+- [参考链接 1](https://chatgpt.com/s/cx_6b05242710108191a048636b3acaacd2)
+- [参考链接 2](https://chatgpt.com/s/cx_6b052450f7c08191a3461b80a0ba23ab)
 
 ## 运行
 
@@ -32,25 +33,84 @@ python train.py --help
 
 ## 对照公式读 BPTT
 
-前向使用复位前电位 `u`、脉冲 `s` 和复位后电位 `v`。默认 `β = 0.9`、`θ = 1.0`。
+### 1. LIF 前向与替代导数
 
-```text
-u_t = β v_(t-1) + I_t
-s_t = H(u_t - θ)
-v_t = u_t - θ s_t
-```
+$u_t$ 是复位前膜电位，$s_t$ 是脉冲，$v_t$ 是复位后膜电位。初始电位 $v_0=0$，默认泄漏系数 $\beta=0.9$，发放阈值 $\theta=1.0$。
 
-反向时，`q_t` 是当前脉冲从本层外部收到的梯度，`δ_t` 是总损失对当前复位前电位 `u_t` 的梯度。用 [`snn/spike.py`](snn/spike.py) 的 `φ_t = 1 / (1 + 5 |u_t - θ|)²` 近似阶跃函数的导数。
+$$
+\begin{aligned}
+u_t &= \beta v_{t-1} + I_t, \\
+s_t &= H(u_t-\theta), \\
+v_t &= u_t - \theta s_t.
+\end{aligned}
+$$
 
-```text
-δ_(T+1) = 0
-δ_t ≈ q_t φ_t + β (1 - θ φ_t) δ_(t+1)
-       └ 当前脉冲 ┘  └ 未来经复位和泄漏传回 ┘
-```
+达到阈值时，阶跃函数 $H$ 输出 $1$，随后电位减去一个阈值。反向时，用 $\phi_t$ 近似阶跃函数在该处的导数。 [snn/spike.py](snn/spike.py)
 
-`1 - θ φ_t` 来自对 `v_t = u_t - θ s_t` 求导。输出层的分数是脉冲和，所以每步的 `q_t` 都等于损失对这个分数的梯度。隐藏层的 `q_t` 则由输出层同一时间步的电流梯度通过 `W2` 传回。由于 `u_t` 对 `I_t` 的局部导数为 1，各步的 `δ_t` 也就是电流梯度。
+$$
+\phi_t = \frac{1}{\left(1+5\lvert u_t-\theta\rvert\right)^2}.
+$$
 
-代码把一个批次的样本放在矩阵的各行，因此用 `X_t.T @ Δ_t` 算每步的权重梯度。对时间步求和，得到共享权重的梯度。偏置梯度是把 `Δ_t` 沿时间和批量两维求和。
+### 2. 交叉熵给出输出层的直接梯度
+
+第 $b$ 张图像的第 $k$ 类分数 $C_{b,k}$ 是该输出神经元在 $T$ 步内的脉冲总数。对每张图像的分数做 softmax 得到概率 $p_{b,k}$，再用真实标签 $y_b$ 计算批量平均交叉熵。
+
+$$
+\begin{aligned}
+C_{b,k} &= \sum_{t=1}^{T} s^{\mathrm{out}}_{t,b,k}, \\
+p_{b,k} &= \frac{\exp(C_{b,k})}{\sum_{j=0}^{9}\exp(C_{b,j})}, \\
+L &= -\frac{1}{B}\sum_{b=1}^{B}\log p_{b,y_b}.
+\end{aligned}
+$$
+
+`d_counts` 是 $\partial L/\partial C$。每个脉冲以系数 $1$ 加入总脉冲数，因此同一个样本、同一个输出神经元的每个时间步都收到相同的直接梯度 $q^{\mathrm{out}}_{t,b,k}$。 [snn/loss.py](snn/loss.py)
+
+$$
+q^{\mathrm{out}}_{t,b,k}
+= \frac{\partial L}{\partial C_{b,k}}
+= \frac{p_{b,k}-\mathbf{1}[k=y_b]}{B}.
+$$
+
+### 3. 从最后一个时间步递推
+
+对单个 LIF 神经元，$q_t$ 表示从本层外部传到脉冲 $s_t$ 的梯度，$\delta_t$ 表示损失对复位前膜电位 $u_t$ 的梯度。复位式给出 $1-\theta\phi_t$，下一步的膜电位更新再带来泄漏系数 $\beta$。
+
+$$
+\begin{aligned}
+\delta_{T+1} &= 0, \\
+\delta_t &\approx
+\underbrace{q_t\phi_t}_{\mathrm{direct}}
++
+\underbrace{\beta(1-\theta\phi_t)\,\delta_{t+1}}_{\mathrm{future}},
+\qquad t=T,\ldots,1.
+\end{aligned}
+$$
+
+末步只剩直接项 $\delta_T\approx q_T\phi_T$。本步的 $I_t$ 以系数 $1$ 加入 $u_t$，所以 $\delta_t$ 也就是电流梯度。 [snn/lif.py](snn/lif.py)
+
+代码按行存放一个批次的样本。用 $\Delta_t$ 表示一批样本在时间步 $t$ 的电流梯度，用 $Q_t$ 表示同一批样本的直接脉冲梯度。输出层先用交叉熵给出的 $Q_t^{\mathrm{out}}$ 完成 BPTT，再把该步的完整 $\Delta_t^{\mathrm{out}}$ 通过 $W_2^{\mathsf T}$ 传给隐藏层。 [snn/model.py](snn/model.py)
+
+$$
+Q_t^{\mathrm{hid}} = \Delta_t^{\mathrm{out}} W_2^{\mathsf T}.
+$$
+
+这个 $Q_t^{\mathrm{hid}}$ 用于隐藏层递推中的直接项。隐藏层再用自己的替代导数与跨时间项，算出 $\Delta_t^{\mathrm{hid}}$。
+
+### 4. 累加共享权重的梯度
+
+$X_t$ 是第一层在第 $t$ 步的输入，$S_t^{\mathrm{hid}}$ 是隐藏层在同一步的脉冲，也是第二层的输入。每个时间步的矩阵乘法汇总了该批样本的贡献，再对所有时间步求和。
+
+$$
+\begin{aligned}
+\frac{\partial L}{\partial W_1}
+&\approx \sum_{t=1}^{T} X_t^{\mathsf T}\Delta_t^{\mathrm{hid}}, \\
+\frac{\partial L}{\partial W_2}
+&\approx \sum_{t=1}^{T} \left(S_t^{\mathrm{hid}}\right)^{\mathsf T}
+\Delta_t^{\mathrm{out}}.
+\end{aligned}
+$$
+
+默认 MNIST 编码让所有 $X_t$ 都等于同一份 $X$，因此代码先加总隐藏层的时间梯度，再用 `inputs.T` 左乘。偏置梯度直接在时间和批量两个维度上对 $\Delta_t$ 求和。
 
 ## 替换和验证
 
