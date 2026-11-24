@@ -42,33 +42,56 @@ class SNN:
 
     def forward(self, inputs: np.ndarray, steps: int) -> tuple[np.ndarray, ForwardCache]:
         """输入为 [批量, 特征] 或 [时间步, 批量, 特征]，返回 [批量, 类别] 分数。"""
+        # 异常情况
         if inputs.ndim not in (2, 3) or steps < 1:
             raise ValueError("输入应为 [批量, 特征] 或 [时间步, 批量, 特征]，时间步数应为正。")
         if inputs.ndim == 3 and inputs.shape[0] != steps:
             raise ValueError("输入序列长度必须等于 steps。")
 
+        # 输入层 - 隐藏层
+        # MNIST 输入是 [B, 784]，其中 B 是批量大小。乘以 W1 加 B1 后，得到 [B, 128]，也就是每张图像给 128 个隐藏神经元提供的输入电流。
         hidden_current = inputs @ self.params["W1"] + self.params["b1"]
         if inputs.ndim == 2:
-            # 恒定输入的线性投影只需算一次。广播得到各步电流，膜电位仍逐步更新。
+            # [B, 128] → [16, B, 128]
+            # 完整的代码：
+            # batch_size, hidden_size = hidden_current.shape
+            # target_shape = (steps, batch_size, hidden_size)
+            # hidden_current = np.broadcast_to(hidden_current, target_shape)
             hidden_current = np.broadcast_to(hidden_current, (steps, *hidden_current.shape))
+
+        # 调用 LIF.py 里面的 forward 函数
         hidden_spikes, hidden_offsets = self.hidden_lif.forward(hidden_current)
 
         # 每个时间步，输出层接收同一时间步的隐藏脉冲。
         steps, batch, hidden_size = hidden_spikes.shape
+
         flat_hidden = hidden_spikes.reshape(steps * batch, hidden_size)
+
+        # 隐藏层 - 输出层
         output_current = flat_hidden @ self.params["W2"] + self.params["b2"]
+
+        # 调用 LIF.py 中的forward函数
         output_spikes, output_offsets = self.output_lif.forward(
+            # 恢复形状，假设有 16 个时间步、32 张图像，output_current 原来是 (512, 10)。reshape(16, 32, -1) 把它变成 (16, 32, 10)
             output_current.reshape(steps, batch, -1)
         )
+
         counts = output_spikes.sum(axis=0)
         return counts, ForwardCache(inputs, hidden_spikes, hidden_offsets, output_offsets)
 
     def backward(self, d_counts: np.ndarray, cache: ForwardCache) -> dict[str, np.ndarray]:
         """先求输出层的时间梯度，再求隐藏层的时间梯度，最后累加参数梯度。"""
+
         steps, batch, hidden_size = cache.hidden_spikes.shape
-        # 计数 C = Σ_t s_t，所以每步都从 C 收到同一个梯度，不除以步数。
+
+        # broadcast_to 沿时间维让这 16 步共享同一份 [B, 10] 梯度。
+        # d_counts:        [B, 10]
+        # d_output_spikes: [16, B, 10]
         d_output_spikes = np.broadcast_to(d_counts, cache.output_offsets.shape)
+
+        # 调用 LIF.py 的 backward
         d_output_current = self.output_lif.backward(d_output_spikes, cache.output_offsets)
+
         flat_d_output = d_output_current.reshape(steps * batch, -1)
 
         # 在同一时刻，通过 W2 把输出层的电流梯度传给隐藏层的脉冲。

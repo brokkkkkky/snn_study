@@ -30,10 +30,17 @@ def run_epoch(
         targets = labels[batch]
         inputs = encode_pixels(images[batch])
 
-        # 前向展开 16 步（可调），再对累计脉冲数计算一次交叉熵。
+        # 前向展开 16 步，再对累计脉冲数计算一次交叉熵。
+        # 调用model.py的forward函数
+        # cache 包含：cache.inputs，cache.hidden_spikes，cache.hidden_offsets，cache.output_offsets
+        # offsets 用于计算替代梯度
         counts, cache = model.forward(inputs, steps)
+
+        # d_counts 和 counts 形状相同。d_counts[b, k] 表示第 b 张图像的第 k 个类别分数增大一点时，损失会朝哪个方向变化。
         loss, d_counts = cross_entropy(counts, targets)
+
         if optimizer is not None:
+            # 调用 model.py 的backward
             gradients = model.backward(d_counts, cache)
             optimizer.step(gradients)
 
