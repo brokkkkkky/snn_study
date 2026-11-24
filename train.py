@@ -37,6 +37,7 @@ def run_epoch(
         counts, cache = model.forward(inputs, steps)
 
         # d_counts 和 counts 形状相同。d_counts[b, k] 表示第 b 张图像的第 k 个类别分数增大一点时，损失会朝哪个方向变化。
+        # d_counts 就是输出层的qt 也就是aL/as,用于计算输出层的δ
         loss, d_counts = cross_entropy(counts, targets)
 
         if optimizer is not None:

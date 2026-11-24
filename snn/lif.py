@@ -64,8 +64,10 @@ class LIF:
             # v_t = u_t - θ s_t，所以 dv_t / du_t ≈ 1 - θ φ_t。
             # u_(t+1) = β v_t + I_(t+1)，再乘 β 就得到跨时间的梯度。
             future = self.beta * (1.0 - self.threshold * phi) * d_next_u
-            
+
+            # 总梯度
             d_u = direct + future
+            
             # u_t 对 I_t 的局部导数为 1，故 dL/dI_t 等于 δ_t。
             d_currents[t] = d_u
             d_next_u = d_u

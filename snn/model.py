@@ -89,7 +89,7 @@ class SNN:
         # d_output_spikes: [16, B, 10]
         d_output_spikes = np.broadcast_to(d_counts, cache.output_offsets.shape)
 
-        # 调用 LIF.py 的 backward
+        # 调用 LIF.py 的 backward，算出δ_t
         d_output_current = self.output_lif.backward(d_output_spikes, cache.output_offsets)
 
         flat_d_output = d_output_current.reshape(steps * batch, -1)
@@ -98,6 +98,7 @@ class SNN:
         d_hidden_spikes = (flat_d_output @ self.params["W2"].T).reshape(
             steps, batch, hidden_size
         )
+
         d_hidden_current = self.hidden_lif.backward(d_hidden_spikes, cache.hidden_offsets)
 
         # 行向量布局把截图中的 δ_t x_t^T 写为 X_t^T Δ_t。
@@ -108,7 +109,9 @@ class SNN:
         else:
             flat_inputs = cache.inputs.reshape(steps * batch, -1)
             d_w1 = flat_inputs.T @ d_hidden_current.reshape(steps * batch, hidden_size)
+        
         flat_hidden = cache.hidden_spikes.reshape(steps * batch, hidden_size)
+
         return {
             "W1": d_w1,
             "b1": d_hidden_current.sum(axis=(0, 1)),

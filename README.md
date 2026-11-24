@@ -1,6 +1,8 @@
 # 用 NumPy 学习 LIF 和 BPTT
 
 这个示例在 CPU 上训练 MNIST 手写数字分类器。网络结构为 `784 维像素 → 128 个隐藏 LIF 神经元 → 10 个输出 LIF 神经元`。默认把每张图像输入 16 个时间步。两个 LIF 层的膜电位逐步变化，每层的权重和偏置在所有时间步共享。
+- 参考链接1：https://chatgpt.com/s/cx_6b05242710108191a048636b3acaacd2
+- 参考链接2：https://chatgpt.com/s/cx_6b052450f7c08191a3461b80a0ba23ab
 
 ## 运行
 
